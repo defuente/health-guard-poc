@@ -28,7 +28,7 @@ class AlertRuleEngineTest {
 
         assertNotNull(result)
         assertEquals(40, result?.minimumBpm)
-        assertEquals(12, result?.durationMinutes)
+        assertEquals(12L, result?.durationMinutes)
         assertEquals(7, result?.readingsCount)
     }
 
