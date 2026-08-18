@@ -1,6 +1,7 @@
 package cl.defuente.healthguard.monitoring
 
 import android.content.Context
+import cl.defuente.healthguard.alerts.DeliveryChannel
 import cl.defuente.healthguard.domain.AlertRule
 import cl.defuente.healthguard.domain.OxygenAlertRule
 import java.time.Instant
@@ -46,14 +47,23 @@ class MonitorPreferences(context: Context) {
     fun loadAlertSettings(): AlertSettings = AlertSettings(
         personName = prefs.getString(KEY_PERSON_NAME, "Persona monitoreada") ?: "Persona monitoreada",
         phoneNumber = prefs.getString(KEY_PHONE_NUMBER, "") ?: "",
-        smsEnabled = prefs.getBoolean(KEY_SMS_ENABLED, false)
+        deliveryEnabled = prefs.getBoolean(
+            KEY_DELIVERY_ENABLED,
+            prefs.getBoolean(KEY_LEGACY_SMS_ENABLED, false)
+        ),
+        deliveryChannel = DeliveryChannel.fromWireValue(prefs.getString(KEY_DELIVERY_CHANNEL, null)),
+        backendUrl = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL,
+        deviceToken = prefs.getString(KEY_DEVICE_TOKEN, "") ?: ""
     )
 
     fun saveAlertSettings(settings: AlertSettings) {
         prefs.edit()
             .putString(KEY_PERSON_NAME, settings.personName)
             .putString(KEY_PHONE_NUMBER, settings.phoneNumber)
-            .putBoolean(KEY_SMS_ENABLED, settings.smsEnabled)
+            .putBoolean(KEY_DELIVERY_ENABLED, settings.deliveryEnabled)
+            .putString(KEY_DELIVERY_CHANNEL, settings.deliveryChannel.wireValue)
+            .putString(KEY_BACKEND_URL, settings.backendUrl)
+            .putString(KEY_DEVICE_TOKEN, settings.deviceToken)
             .apply()
     }
 
@@ -97,8 +107,8 @@ class MonitorPreferences(context: Context) {
         prefs.edit().putBoolean(KEY_OXYGEN_ALERT_ACTIVE, active).apply()
     }
 
-    fun setSmsStatus(message: String) {
-        prefs.edit().putString(KEY_LAST_SMS_STATUS, message).apply()
+    fun setDeliveryStatus(message: String) {
+        prefs.edit().putString(KEY_LAST_DELIVERY_STATUS, message).apply()
     }
 
     fun snapshot(): MonitorSnapshot {
@@ -115,11 +125,17 @@ class MonitorPreferences(context: Context) {
             heartAlertActive = prefs.getBoolean(KEY_HEART_ALERT_ACTIVE, false),
             oxygenAlertActive = prefs.getBoolean(KEY_OXYGEN_ALERT_ACTIVE, false),
             lastError = prefs.getString(KEY_LAST_ERROR, null),
-            lastSmsStatus = prefs.getString(KEY_LAST_SMS_STATUS, null)
+            lastDeliveryStatus = prefs.getString(
+                KEY_LAST_DELIVERY_STATUS,
+                prefs.getString(KEY_LEGACY_LAST_SMS_STATUS, null)
+            )
         )
     }
 
     companion object {
+        const val DEFAULT_BACKEND_URL =
+            "https://apxssxmbpozqbdbhdnle.supabase.co/functions/v1/send-alert"
+
         private const val KEY_THRESHOLD = "threshold"
         private const val KEY_DURATION = "duration"
         private const val KEY_MIN_READINGS = "minimum_readings"
@@ -128,7 +144,11 @@ class MonitorPreferences(context: Context) {
         private const val KEY_OXYGEN_MIN_READINGS = "oxygen_minimum_readings"
         private const val KEY_PERSON_NAME = "person_name"
         private const val KEY_PHONE_NUMBER = "phone_number"
-        private const val KEY_SMS_ENABLED = "sms_enabled"
+        private const val KEY_DELIVERY_ENABLED = "delivery_enabled"
+        private const val KEY_DELIVERY_CHANNEL = "delivery_channel"
+        private const val KEY_BACKEND_URL = "backend_url"
+        private const val KEY_DEVICE_TOKEN = "device_token"
+        private const val KEY_LEGACY_SMS_ENABLED = "sms_enabled"
         private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
         private const val KEY_LAST_CHECK_AT = "last_check_at"
         private const val KEY_LAST_BPM = "last_bpm"
@@ -138,14 +158,18 @@ class MonitorPreferences(context: Context) {
         private const val KEY_HEART_ALERT_ACTIVE = "heart_alert_active"
         private const val KEY_OXYGEN_ALERT_ACTIVE = "oxygen_alert_active"
         private const val KEY_LAST_ERROR = "last_error"
-        private const val KEY_LAST_SMS_STATUS = "last_sms_status"
+        private const val KEY_LAST_DELIVERY_STATUS = "last_delivery_status"
+        private const val KEY_LEGACY_LAST_SMS_STATUS = "last_sms_status"
     }
 }
 
 data class AlertSettings(
     val personName: String,
     val phoneNumber: String,
-    val smsEnabled: Boolean
+    val deliveryEnabled: Boolean,
+    val deliveryChannel: DeliveryChannel,
+    val backendUrl: String,
+    val deviceToken: String
 )
 
 data class MonitorSnapshot(
@@ -158,5 +182,5 @@ data class MonitorSnapshot(
     val heartAlertActive: Boolean,
     val oxygenAlertActive: Boolean,
     val lastError: String?,
-    val lastSmsStatus: String?
+    val lastDeliveryStatus: String?
 )

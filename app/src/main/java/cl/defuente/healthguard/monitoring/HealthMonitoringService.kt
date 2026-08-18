@@ -8,7 +8,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import cl.defuente.healthguard.alerts.SmsAlertSender
+import cl.defuente.healthguard.alerts.RemoteAlertSender
 import cl.defuente.healthguard.data.HealthConnectRepository
 import cl.defuente.healthguard.domain.AlertRuleEngine
 import cl.defuente.healthguard.domain.OxygenAlertRuleEngine
@@ -28,14 +28,14 @@ class HealthMonitoringService : Service() {
     private lateinit var repository: HealthConnectRepository
     private lateinit var preferences: MonitorPreferences
     private lateinit var notifier: HealthAlertNotifier
-    private lateinit var smsSender: SmsAlertSender
+    private lateinit var remoteAlertSender: RemoteAlertSender
 
     override fun onCreate() {
         super.onCreate()
         repository = HealthConnectRepository(applicationContext)
         preferences = MonitorPreferences(applicationContext)
         notifier = HealthAlertNotifier(applicationContext)
-        smsSender = SmsAlertSender(applicationContext)
+        remoteAlertSender = RemoteAlertSender()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -109,12 +109,8 @@ class HealthMonitoringService : Service() {
             if (heartAlert != null && !snapshot.heartAlertActive) {
                 preferences.setHeartAlertActive(true)
                 notifier.showLowHeartRateAlert(heartAlert)
-                maybeSendSms(alertSettings) {
-                    smsSender.sendHeartRateAlert(
-                        alertSettings.phoneNumber,
-                        alertSettings.personName,
-                        heartAlert
-                    )
+                maybeDeliver(alertSettings) {
+                    remoteAlertSender.sendHeartRateAlert(alertSettings, heartAlert)
                 }
             } else if (
                 heartAlert == null && snapshot.heartAlertActive && latestHeart != null &&
@@ -131,12 +127,8 @@ class HealthMonitoringService : Service() {
             if (oxygenAlert != null && !snapshot.oxygenAlertActive) {
                 preferences.setOxygenAlertActive(true)
                 notifier.showLowOxygenAlert(oxygenAlert)
-                maybeSendSms(alertSettings) {
-                    smsSender.sendOxygenAlert(
-                        alertSettings.phoneNumber,
-                        alertSettings.personName,
-                        oxygenAlert
-                    )
+                maybeDeliver(alertSettings) {
+                    remoteAlertSender.sendOxygenAlert(alertSettings, oxygenAlert)
                 }
             } else if (
                 oxygenAlert == null && snapshot.oxygenAlertActive && latestOxygen != null &&
@@ -165,11 +157,25 @@ class HealthMonitoringService : Service() {
         )
     }
 
-    private fun maybeSendSms(settings: AlertSettings, send: () -> Result<Unit>) {
-        if (!settings.smsEnabled || settings.phoneNumber.isBlank()) return
+    private suspend fun maybeDeliver(
+        settings: AlertSettings,
+        send: suspend () -> Result<Unit>
+    ) {
+        if (!settings.deliveryEnabled) return
+        if (settings.phoneNumber.isBlank() || settings.backendUrl.isBlank() || settings.deviceToken.isBlank()) {
+            preferences.setDeliveryStatus("Alerta local generada; falta configurar backend, token o teléfono")
+            return
+        }
+
         send().fold(
-            onSuccess = { preferences.setSmsStatus("Último SMS de alerta solicitado correctamente") },
-            onFailure = { preferences.setSmsStatus("Error SMS: ${it.message ?: it::class.simpleName}") }
+            onSuccess = {
+                preferences.setDeliveryStatus(
+                    "Alerta enviada por ${RemoteAlertSender.describeChannel(settings)}"
+                )
+            },
+            onFailure = {
+                preferences.setDeliveryStatus("Error de envío remoto: ${it.message ?: it::class.simpleName}")
+            }
         )
     }
 
