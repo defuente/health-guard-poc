@@ -1,37 +1,66 @@
 # Health Guard POC
 
-POC Android para validar un flujo de alerta familiar basado en frecuencia cardíaca disponible en Health Connect.
+POC Android para monitoreo familiar con datos disponibles en Health Connect y alertas remotas.
 
-## Objetivo de esta primera versión
+## Flujo validado
 
-Validar la ruta:
+`Xiaomi Smart Band 8 -> Mi Fitness -> Health Connect -> Health Guard`
 
-`Xiaomi Smart Band 8 -> Mi Fitness -> Health Connect -> Health Guard POC`
+La POC ya valida lectura real de:
 
-La app:
+- frecuencia cardíaca (`HeartRateRecord`);
+- saturación de oxígeno SpO₂ (`OxygenSaturationRecord`);
+- lectura en segundo plano;
+- monitoreo nocturno mediante foreground service.
 
-- solicita permiso de lectura de frecuencia cardíaca;
-- solicita lectura en segundo plano cuando la versión instalada de Health Connect lo soporta;
-- lee `HeartRateRecord` de las últimas 12 horas;
-- muestra las muestras y su aplicación de origen;
-- evalúa una regla configurable de frecuencia baja sostenida;
-- incluye un modo de simulación de 12 minutos para probar la alerta sin depender de un episodio real;
-- ejecuta tests unitarios del motor de reglas en GitHub Actions.
+Health Guard no es un dispositivo médico. Los umbrales configurables son para pruebas y no constituyen recomendaciones clínicas.
 
-> Health Guard POC no es un dispositivo médico y no debe usarse para diagnóstico ni para decidir tratamiento. Los umbrales de alerta deben definirse con un profesional de salud.
+## v0.4
 
-## Requisitos
+La versión 0.4 elimina el envío directo de SMS desde Android. La entrega remota usa:
 
-- Android Studio reciente con soporte para AGP 9.3.
-- JDK 17.
-- Android SDK 37.
-- Teléfono Android con Health Connect disponible.
+`Health Guard -> HTTPS -> backend -> proveedor de mensajería -> familiar`
+
+La app soporta como canales configurables:
+
+- SMS;
+- WhatsApp.
+
+El backend de referencia está en:
+
+`supabase/functions/send-alert/index.ts`
+
+La función usa Twilio Programmable Messaging y guarda todas las credenciales sensibles del proveedor en secretos del backend, nunca en el APK.
+
+Consulta `docs/remote-alert-delivery.md` para el despliegue y configuración.
+
+## Funciones actuales
+
+- lectura de frecuencia cardíaca y SpO₂ desde Health Connect;
+- visualización de fuente y últimas muestras;
+- reglas independientes para FC y SpO₂;
+- protección contra datos antiguos y huecos excesivos entre muestras;
+- simulación de FC baja y SpO₂ baja;
+- monitoreo en segundo plano aproximadamente una vez por minuto;
+- notificaciones locales de alerta y recuperación;
+- una entrega remota por cada episodio nuevo;
+- configuración de nombre, teléfono, canal, URL HTTPS y token del dispositivo;
+- botón para enviar una alerta remota de prueba;
+- GitHub Actions para tests y APK debug.
+
+## Requisitos Android
+
+- Android Studio reciente con soporte para AGP 9.3;
+- JDK 17 o superior;
+- Android SDK 37;
+- teléfono Android con Health Connect disponible;
+- Mi Fitness compartiendo los datos requeridos con Health Connect.
 
 El proyecto usa Android Gradle Plugin 9.3.0, Gradle 9.5.0, Compose BOM 2026.06.00 y Health Connect 1.1.0.
 
-## Primer arranque en Windows
+## Compilar en Windows
 
-El repositorio todavía no almacena el `gradle-wrapper.jar` binario. Para generarlo localmente una sola vez:
+La primera vez:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap-gradle.ps1
@@ -40,42 +69,40 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap-gradle.ps1
 Luego:
 
 ```powershell
-.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
 ```
 
 El APK queda en:
 
 `app\build\outputs\apk\debug\app-debug.apk`
 
-También puedes abrir el directorio directamente en Android Studio.
+## Configuración de Health Connect
 
-## Prueba con la Xiaomi Smart Band 8
+1. Vincula la Smart Band con Mi Fitness.
+2. Activa la sincronización de frecuencia cardíaca y oxígeno cuando esté disponible.
+3. Instala Health Guard.
+4. Pulsa **Solicitar acceso**.
+5. Autoriza frecuencia cardíaca, SpO₂ y lectura en segundo plano.
+6. Pulsa **Actualizar** y verifica que la fuente sea Mi Fitness/Xiaomi.
 
-1. Mantén la Smart Band vinculada con Mi Fitness.
-2. En Mi Fitness/Health Connect autoriza el intercambio de frecuencia cardíaca si la opción está disponible en el teléfono.
-3. Instala y abre Health Guard POC.
-4. Pulsa **Solicitar acceso** y concede lectura de frecuencia cardíaca.
-5. Pulsa **Actualizar**.
-6. Revisa si aparecen lecturas reales y qué aplicación figura como fuente.
-7. Activa **Simular FC baja por 12 min** para comprobar el motor de reglas.
+## Alertas remotas
 
-La métrica más importante de esta POC es medir cuánto tarda una lectura de la pulsera en aparecer en Health Connect. Si la sincronización no es suficientemente rápida para una alerta útil, la siguiente alternativa técnica será una integración BLE directa con la pulsera.
+Para habilitarlas necesitas un backend desplegado. En la app configura:
 
-## Regla de alerta actual
+- nombre de la persona monitoreada;
+- teléfono destino en formato E.164, por ejemplo `+56912345678`;
+- SMS o WhatsApp;
+- URL HTTPS del endpoint;
+- token del dispositivo;
+- switch **Enviar alertas automáticamente**.
 
-Por defecto la interfaz propone, solo como valor de prueba:
-
-- BPM menor a 45;
-- duración mínima de 10 minutos;
-- al menos 5 lecturas consecutivas.
-
-Todos esos valores son editables en la pantalla. No representan una recomendación clínica.
+Usa **Enviar alerta de prueba** antes de iniciar el monitoreo nocturno.
 
 ## Próximas etapas
 
-1. Validar latencia real Smart Band 8 -> Health Connect.
-2. Añadir monitoreo periódico en segundo plano.
-3. Persistir episodios y evitar alertas duplicadas.
-4. Implementar backend mínimo.
-5. Enviar push/SMS a contactos familiares.
-6. Añadir confirmación de recepción y recuperación del ritmo.
+- desplegar un proyecto Supabase independiente para Health Guard;
+- configurar Twilio y probar SMS/WhatsApp reales;
+- registrar historial de episodios y entregas;
+- agregar confirmación de recepción por un familiar;
+- reemplazar el token compartido por autenticación de usuario/dispositivo;
+- agregar rate limiting y destinos familiares previamente autorizados.
