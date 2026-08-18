@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -26,7 +27,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import cl.defuente.healthguard.alerts.DeliveryChannel
 import cl.defuente.healthguard.data.HealthConnectRepository
 import cl.defuente.healthguard.domain.AlertRule
 import cl.defuente.healthguard.domain.AlertRuleEngine
@@ -49,10 +52,8 @@ fun HealthGuardApp(
     repository: HealthConnectRepository,
     monitorPreferences: MonitorPreferences,
     permissionRefreshVersion: Int,
-    smsPermissionGranted: Boolean,
     onRequestPermissions: () -> Unit,
-    onRequestSmsPermission: () -> Unit,
-    onSendTestSms: (String, String) -> String,
+    onSendTestAlert: suspend (AlertSettings) -> Result<Unit>,
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit
 ) {
@@ -80,8 +81,11 @@ fun HealthGuardApp(
     val initialAlertSettings = remember { monitorPreferences.loadAlertSettings() }
     var personNameText by remember { mutableStateOf(initialAlertSettings.personName) }
     var phoneNumberText by remember { mutableStateOf(initialAlertSettings.phoneNumber) }
-    var smsEnabled by remember { mutableStateOf(initialAlertSettings.smsEnabled) }
-    var smsTestStatus by remember { mutableStateOf<String?>(null) }
+    var deliveryEnabled by remember { mutableStateOf(initialAlertSettings.deliveryEnabled) }
+    var deliveryChannel by remember { mutableStateOf(initialAlertSettings.deliveryChannel) }
+    var backendUrlText by remember { mutableStateOf(initialAlertSettings.backendUrl) }
+    var deviceTokenText by remember { mutableStateOf(initialAlertSettings.deviceToken) }
+    var deliveryTestStatus by remember { mutableStateOf<String?>(null) }
 
     var monitorSnapshot by remember { mutableStateOf(monitorPreferences.snapshot()) }
 
@@ -133,7 +137,10 @@ fun HealthGuardApp(
     val alertSettings = AlertSettings(
         personName = personNameText.take(50),
         phoneNumber = phoneNumberText.take(20),
-        smsEnabled = smsEnabled
+        deliveryEnabled = deliveryEnabled,
+        deliveryChannel = deliveryChannel,
+        backendUrl = backendUrlText.trim().take(300),
+        deviceToken = deviceTokenText.trim().take(200)
     )
 
     LaunchedEffect(heartRule) { monitorPreferences.saveRule(heartRule) }
@@ -160,15 +167,14 @@ fun HealthGuardApp(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Health Guard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("POC de monitoreo familiar · v0.3 · FC + SpO₂ + SMS")
+            Text("POC de monitoreo familiar · v0.4 · FC + SpO₂ + alertas remotas")
 
             StatusCard(
                 healthConnectStatus = repository.statusLabel(),
                 hasHeartRatePermission = hasHeartRatePermission,
                 hasOxygenPermission = hasOxygenPermission,
                 hasBackgroundPermission = hasBackgroundPermission,
-                backgroundFeatureAvailable = repository.isBackgroundReadFeatureAvailable(),
-                smsPermissionGranted = smsPermissionGranted
+                backgroundFeatureAvailable = repository.isBackgroundReadFeatureAvailable()
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -199,7 +205,11 @@ fun HealthGuardApp(
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Contacto de alerta", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Entrega de alertas", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Las alertas salen por HTTPS hacia un backend; la app ya no solicita permiso SEND_SMS.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     OutlinedTextField(
                         value = personNameText,
                         onValueChange = { personNameText = it.take(50) },
@@ -209,7 +219,34 @@ fun HealthGuardApp(
                     OutlinedTextField(
                         value = phoneNumberText,
                         onValueChange = { phoneNumberText = it.filter { ch -> ch.isDigit() || ch == '+' || ch == ' ' || ch == '-' }.take(20) },
-                        label = { Text("Teléfono SMS, ej. +56912345678") },
+                        label = { Text("Teléfono destino, ej. +56912345678") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("Canal")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = deliveryChannel == DeliveryChannel.SMS,
+                            onClick = { deliveryChannel = DeliveryChannel.SMS },
+                            label = { Text("SMS") }
+                        )
+                        FilterChip(
+                            selected = deliveryChannel == DeliveryChannel.WHATSAPP,
+                            onClick = { deliveryChannel = DeliveryChannel.WHATSAPP },
+                            label = { Text("WhatsApp") }
+                        )
+                    }
+                    OutlinedTextField(
+                        value = backendUrlText,
+                        onValueChange = { backendUrlText = it.take(300) },
+                        label = { Text("URL HTTPS del backend") },
+                        placeholder = { Text("https://.../functions/v1/send-alert") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = deviceTokenText,
+                        onValueChange = { deviceTokenText = it.take(200) },
+                        label = { Text("Token del dispositivo") },
+                        visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(
@@ -217,28 +254,33 @@ fun HealthGuardApp(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Enviar SMS automático")
+                            Text("Enviar alertas automáticamente")
                             Text(
-                                "Se enviará una vez por episodio de FC o SpO₂ bajo.",
+                                "Se envía una vez por cada episodio nuevo de FC o SpO₂ bajo.",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
-                        Switch(checked = smsEnabled, onCheckedChange = { smsEnabled = it })
+                        Switch(checked = deliveryEnabled, onCheckedChange = { deliveryEnabled = it })
                     }
-                    if (!smsPermissionGranted) {
-                        Button(onClick = onRequestSmsPermission) { Text("Autorizar envío de SMS") }
-                    } else {
-                        Button(
-                            onClick = { smsTestStatus = onSendTestSms(phoneNumberText, personNameText) },
-                            enabled = phoneNumberText.isNotBlank()
-                        ) {
-                            Text("Enviar SMS de prueba")
-                        }
+                    Button(
+                        onClick = {
+                            deliveryTestStatus = "Enviando alerta de prueba..."
+                            scope.launch {
+                                onSendTestAlert(alertSettings).fold(
+                                    onSuccess = { deliveryTestStatus = "Alerta de prueba enviada por ${deliveryChannelLabel(deliveryChannel)}." },
+                                    onFailure = { deliveryTestStatus = "Error de envío: ${it.message ?: it::class.simpleName}" }
+                                )
+                            }
+                        },
+                        enabled = deliveryEnabled && phoneNumberText.isNotBlank() &&
+                            backendUrlText.startsWith("https://") && deviceTokenText.isNotBlank()
+                    ) {
+                        Text("Enviar alerta de prueba")
                     }
-                    smsTestStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                    monitorSnapshot.lastSmsStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    deliveryTestStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    monitorSnapshot.lastDeliveryStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     Text(
-                        "Esta POC usa el SMS del propio teléfono. Puede generar cobros según tu plan móvil.",
+                        "SMS y WhatsApp dependen del proveedor configurado en el backend. Las credenciales del proveedor nunca se guardan en el APK.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -386,8 +428,7 @@ private fun StatusCard(
     hasHeartRatePermission: Boolean,
     hasOxygenPermission: Boolean,
     hasBackgroundPermission: Boolean,
-    backgroundFeatureAvailable: Boolean,
-    smsPermissionGranted: Boolean
+    backgroundFeatureAvailable: Boolean
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -402,7 +443,6 @@ private fun StatusCard(
                     "Lectura en segundo plano: ${if (hasBackgroundPermission) "autorizada" else "sin autorización"}"
                 }
             )
-            Text("SMS: ${if (smsPermissionGranted) "autorizado" else "sin autorización"}")
         }
     }
 }
@@ -463,3 +503,8 @@ private fun simulatedLowOxygenReadings(now: Instant = Instant.now()): List<Oxyge
 }
 
 private fun formatPercent(value: Double): String = String.format(Locale.US, "%.0f", value)
+
+private fun deliveryChannelLabel(channel: DeliveryChannel): String = when (channel) {
+    DeliveryChannel.SMS -> "SMS"
+    DeliveryChannel.WHATSAPP -> "WhatsApp"
+}
