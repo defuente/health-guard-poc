@@ -109,10 +109,13 @@ class HealthMonitoringService : Service() {
             if (heartAlert != null && !snapshot.heartAlertActive) {
                 preferences.setHeartAlertActive(true)
                 notifier.showLowHeartRateAlert(heartAlert)
-                maybeSendSms(
-                    alertSettings,
-                    smsSender.sendHeartRateAlert(alertSettings.phoneNumber, alertSettings.personName, heartAlert)
-                )
+                maybeSendSms(alertSettings) {
+                    smsSender.sendHeartRateAlert(
+                        alertSettings.phoneNumber,
+                        alertSettings.personName,
+                        heartAlert
+                    )
+                }
             } else if (
                 heartAlert == null && snapshot.heartAlertActive && latestHeart != null &&
                 latestHeart.bpm >= heartRule.lowHeartRateThresholdBpm
@@ -128,10 +131,13 @@ class HealthMonitoringService : Service() {
             if (oxygenAlert != null && !snapshot.oxygenAlertActive) {
                 preferences.setOxygenAlertActive(true)
                 notifier.showLowOxygenAlert(oxygenAlert)
-                maybeSendSms(
-                    alertSettings,
-                    smsSender.sendOxygenAlert(alertSettings.phoneNumber, alertSettings.personName, oxygenAlert)
-                )
+                maybeSendSms(alertSettings) {
+                    smsSender.sendOxygenAlert(
+                        alertSettings.phoneNumber,
+                        alertSettings.personName,
+                        oxygenAlert
+                    )
+                }
             } else if (
                 oxygenAlert == null && snapshot.oxygenAlertActive && latestOxygen != null &&
                 latestOxygen.percentage >= oxygenRule.lowOxygenThresholdPercent
@@ -159,9 +165,9 @@ class HealthMonitoringService : Service() {
         )
     }
 
-    private fun maybeSendSms(settings: AlertSettings, result: Result<Unit>) {
+    private fun maybeSendSms(settings: AlertSettings, send: () -> Result<Unit>) {
         if (!settings.smsEnabled || settings.phoneNumber.isBlank()) return
-        result.fold(
+        send().fold(
             onSuccess = { preferences.setSmsStatus("Último SMS de alerta solicitado correctamente") },
             onFailure = { preferences.setSmsStatus("Error SMS: ${it.message ?: it::class.simpleName}") }
         )
