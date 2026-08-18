@@ -52,7 +52,7 @@ class MonitorPreferences(context: Context) {
             prefs.getBoolean(KEY_LEGACY_SMS_ENABLED, false)
         ),
         deliveryChannel = DeliveryChannel.fromWireValue(prefs.getString(KEY_DELIVERY_CHANNEL, null)),
-        backendUrl = prefs.getString(KEY_BACKEND_URL, "") ?: "",
+        backendUrl = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL,
         deviceToken = prefs.getString(KEY_DEVICE_TOKEN, "") ?: ""
     )
 
@@ -133,6 +133,9 @@ class MonitorPreferences(context: Context) {
     }
 
     companion object {
+        const val DEFAULT_BACKEND_URL =
+            "https://apxssxmbpozqbdbhdnle.supabase.co/functions/v1/send-alert"
+
         private const val KEY_THRESHOLD = "threshold"
         private const val KEY_DURATION = "duration"
         private const val KEY_MIN_READINGS = "minimum_readings"
