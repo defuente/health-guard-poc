@@ -7,6 +7,35 @@ $zipPath = Join-Path $cacheRoot "gradle-$version-bin.zip"
 $gradleHome = Join-Path $cacheRoot "gradle-$version"
 $gradleBat = Join-Path $gradleHome "bin\gradle.bat"
 
+function Get-JavaVersionText([string]$javaExe) {
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+
+    try {
+        $process = Start-Process `
+            -FilePath $javaExe `
+            -ArgumentList "-version" `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        $stdout = Get-Content $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content $stderrPath -Raw -ErrorAction SilentlyContinue
+        $output = (($stdout + "`n" + $stderr).Trim())
+
+        if ($process.ExitCode -ne 0) {
+            throw "Java version check failed with exit code $($process.ExitCode): $output"
+        }
+
+        return $output
+    }
+    finally {
+        Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Initialize-Java {
     $javaExe = $null
 
@@ -42,7 +71,7 @@ function Initialize-Java {
         throw "Java JDK $minimumJavaMajor+ was not found. Install JDK 17 or newer, or install Android Studio and rerun this script."
     }
 
-    $versionOutput = (& $javaExe -version 2>&1 | Out-String)
+    $versionOutput = Get-JavaVersionText $javaExe
     if ($versionOutput -notmatch 'version\s+"(?<major>\d+)') {
         throw "Could not determine Java version from: $versionOutput"
     }
