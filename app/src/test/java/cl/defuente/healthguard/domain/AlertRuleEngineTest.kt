@@ -2,8 +2,8 @@ package cl.defuente.healthguard.domain
 
 import java.time.Instant
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AlertRuleEngineTest {
@@ -16,6 +16,7 @@ class AlertRuleEngineTest {
     @Test
     fun `triggers alert when low readings persist long enough`() {
         val start = Instant.parse("2026-08-17T03:00:00Z")
+        val now = start.plusSeconds(13 * 60L)
         val readings = (0..6).map { index ->
             HeartRateReading(
                 timestamp = start.plusSeconds(index * 120L),
@@ -24,7 +25,7 @@ class AlertRuleEngineTest {
             )
         }
 
-        val result = AlertRuleEngine.evaluate(readings, rule)
+        val result = AlertRuleEngine.evaluate(readings, rule, now)
 
         assertNotNull(result)
         assertEquals(40, result?.minimumBpm)
@@ -41,7 +42,7 @@ class AlertRuleEngineTest {
             HeartRateReading(start.plusSeconds(120), 68, "test")
         )
 
-        assertNull(AlertRuleEngine.evaluate(readings, rule))
+        assertNull(AlertRuleEngine.evaluate(readings, rule, start.plusSeconds(180)))
     }
 
     @Test
@@ -56,6 +57,30 @@ class AlertRuleEngineTest {
             HeartRateReading(start.plusSeconds(660), 41, "test")
         )
 
-        assertNull(AlertRuleEngine.evaluate(readings, rule))
+        assertNull(AlertRuleEngine.evaluate(readings, rule, start.plusSeconds(720)))
+    }
+
+    @Test
+    fun `large gap resets low sequence`() {
+        val start = Instant.parse("2026-08-17T03:00:00Z")
+        val readings = listOf(
+            HeartRateReading(start, 40, "test"),
+            HeartRateReading(start.plusSeconds(120), 41, "test"),
+            HeartRateReading(start.plusSeconds(900), 39, "test"),
+            HeartRateReading(start.plusSeconds(960), 40, "test")
+        )
+
+        assertNull(AlertRuleEngine.evaluate(readings, rule, start.plusSeconds(1020)))
+    }
+
+    @Test
+    fun `stale low sequence does not trigger`() {
+        val start = Instant.parse("2026-08-17T03:00:00Z")
+        val readings = (0..6).map { index ->
+            HeartRateReading(start.plusSeconds(index * 120L), 40, "test")
+        }
+
+        val now = start.plusSeconds(60 * 60L)
+        assertNull(AlertRuleEngine.evaluate(readings, rule, now))
     }
 }
