@@ -6,15 +6,40 @@ Health Guard v0.4 no usa `SEND_SMS`. La app envía el evento por HTTPS a un back
 
 `Smart Band -> Mi Fitness -> Health Connect -> Health Guard -> HTTPS -> Supabase Edge Function -> Twilio -> SMS/WhatsApp`
 
-## Edge Function
+## Proyecto Supabase de la POC
 
-El código está en:
+Proyecto: `health-guard`
+
+Project ref: `apxssxmbpozqbdbhdnle`
+
+Endpoint desplegado:
+
+`https://apxssxmbpozqbdbhdnle.supabase.co/functions/v1/send-alert`
+
+La Edge Function `send-alert` ya está desplegada con `verify_jwt = false` porque implementa autenticación propia mediante `Authorization: Bearer <HEALTH_GUARD_DEVICE_TOKEN>`.
+
+## Código de la Edge Function
+
+El código versionado está en:
 
 `supabase/functions/send-alert/index.ts`
 
-Despliega la función con el nombre `send-alert`.
+La función:
 
-La función implementa autenticación propia mediante un token del dispositivo, por lo que al desplegar en Supabase debe configurarse con `verify_jwt = false`. La función valida el header `Authorization: Bearer <HEALTH_GUARD_DEVICE_TOKEN>` antes de aceptar una solicitud.
+- valida el token del dispositivo;
+- valida canal, tipo de evento y teléfono E.164;
+- construye el mensaje de FC/SpO₂;
+- entrega el mensaje mediante Twilio;
+- registra auditoría en `public.alert_deliveries`;
+- guarda solo los últimos 4 dígitos del destino en el registro de auditoría.
+
+## Auditoría
+
+La migración está versionada en:
+
+`supabase/migrations/20260818133500_create_alert_deliveries.sql`
+
+La tabla `public.alert_deliveries` tiene RLS habilitado y no posee políticas públicas intencionalmente. Las escrituras se realizan desde la Edge Function usando el service role interno de Supabase.
 
 ## Secretos requeridos
 
@@ -35,17 +60,18 @@ supabase secrets set \
   TWILIO_AUTH_TOKEN="..." \
   TWILIO_SMS_FROM="+1..." \
   TWILIO_WHATSAPP_FROM="+14155238886" \
-  --project-ref <PROJECT_REF>
+  --project-ref apxssxmbpozqbdbhdnle
 ```
+
+También puedes cargarlos desde el dashboard de Supabase en la configuración de Edge Functions/Secrets del proyecto `health-guard`.
 
 ## Configuración en Android
 
-En Health Guard completa:
+La URL del backend queda precargada en la app. Completa:
 
 - nombre de la persona monitoreada;
 - teléfono destino en formato internacional, por ejemplo `+56912345678`;
 - canal `SMS` o `WhatsApp`;
-- URL de la función, por ejemplo `https://<PROJECT_REF>.supabase.co/functions/v1/send-alert`;
 - el mismo valor de `HEALTH_GUARD_DEVICE_TOKEN`;
 - activa `Enviar alertas automáticamente`.
 
@@ -53,7 +79,7 @@ Luego usa **Enviar alerta de prueba** antes de iniciar el monitoreo nocturno.
 
 ## Seguridad de la POC
 
-El token del dispositivo limita quién puede llamar la función, pero sigue siendo una credencial almacenada en el dispositivo y podría extraerse de un teléfono comprometido. Para una versión productiva se recomienda autenticar usuarios/dispositivos, rotar credenciales, registrar eventos, aplicar rate limiting y no permitir destinos arbitrarios sin autorización previa.
+El token del dispositivo limita quién puede llamar la función, pero sigue siendo una credencial almacenada en el dispositivo y podría extraerse de un teléfono comprometido. Para una versión productiva se recomienda autenticar usuarios/dispositivos, rotar credenciales, aplicar rate limiting y no permitir destinos arbitrarios sin autorización previa.
 
 ## WhatsApp
 
