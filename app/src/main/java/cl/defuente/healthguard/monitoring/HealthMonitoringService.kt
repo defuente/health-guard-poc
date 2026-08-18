@@ -8,8 +8,10 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import cl.defuente.healthguard.alerts.SmsAlertSender
 import cl.defuente.healthguard.data.HealthConnectRepository
 import cl.defuente.healthguard.domain.AlertRuleEngine
+import cl.defuente.healthguard.domain.OxygenAlertRuleEngine
 import cl.defuente.healthguard.notifications.HealthAlertNotifier
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
@@ -26,12 +28,14 @@ class HealthMonitoringService : Service() {
     private lateinit var repository: HealthConnectRepository
     private lateinit var preferences: MonitorPreferences
     private lateinit var notifier: HealthAlertNotifier
+    private lateinit var smsSender: SmsAlertSender
 
     override fun onCreate() {
         super.onCreate()
         repository = HealthConnectRepository(applicationContext)
         preferences = MonitorPreferences(applicationContext)
         notifier = HealthAlertNotifier(applicationContext)
+        smsSender = SmsAlertSender(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,26 +81,71 @@ class HealthMonitoringService : Service() {
 
     private suspend fun performCheck() {
         check(repository.isAvailable()) { "Health Connect no está disponible" }
-        check(repository.hasHeartRateReadPermission()) { "Falta permiso para leer frecuencia cardíaca" }
         check(repository.hasBackgroundReadPermission()) { "Falta permiso para leer Health Connect en segundo plano" }
 
-        val readings = repository.readRecentHeartRate(hours = 3)
-        val latest = readings.maxByOrNull { it.timestamp }
-        preferences.setLastCheck(Instant.now(), latest?.bpm, latest?.source)
+        val hasHeartPermission = repository.hasHeartRateReadPermission()
+        val hasOxygenPermission = repository.hasOxygenSaturationReadPermission()
+        check(hasHeartPermission || hasOxygenPermission) { "Falta permiso para leer signos vitales" }
 
-        val rule = preferences.loadRule()
-        val alert = AlertRuleEngine.evaluate(readings, rule)
+        val heartReadings = if (hasHeartPermission) repository.readRecentHeartRate(hours = 3) else emptyList()
+        val oxygenReadings = if (hasOxygenPermission) repository.readRecentOxygenSaturation(hours = 3) else emptyList()
+
+        val latestHeart = heartReadings.maxByOrNull { it.timestamp }
+        val latestOxygen = oxygenReadings.maxByOrNull { it.timestamp }
+        preferences.setLastCheck(
+            at = Instant.now(),
+            bpm = latestHeart?.bpm,
+            heartRateSource = latestHeart?.source,
+            oxygenPercent = latestOxygen?.percentage,
+            oxygenSource = latestOxygen?.source
+        )
+
         val snapshot = preferences.snapshot()
+        val alertSettings = preferences.loadAlertSettings()
 
-        if (alert != null && !snapshot.alertActive) {
-            preferences.setAlertActive(true)
-            notifier.showLowHeartRateAlert(alert)
-        } else if (alert == null && snapshot.alertActive && latest != null && latest.bpm >= rule.lowHeartRateThresholdBpm) {
-            preferences.setAlertActive(false)
-            notifier.showRecovery(latest.bpm)
+        if (hasHeartPermission) {
+            val heartRule = preferences.loadRule()
+            val heartAlert = AlertRuleEngine.evaluate(heartReadings, heartRule)
+            if (heartAlert != null && !snapshot.heartAlertActive) {
+                preferences.setHeartAlertActive(true)
+                notifier.showLowHeartRateAlert(heartAlert)
+                maybeSendSms(
+                    alertSettings,
+                    smsSender.sendHeartRateAlert(alertSettings.phoneNumber, alertSettings.personName, heartAlert)
+                )
+            } else if (
+                heartAlert == null && snapshot.heartAlertActive && latestHeart != null &&
+                latestHeart.bpm >= heartRule.lowHeartRateThresholdBpm
+            ) {
+                preferences.setHeartAlertActive(false)
+                notifier.showHeartRateRecovery(latestHeart.bpm)
+            }
         }
 
-        val notification = notifier.monitoringNotification(latest?.bpm, latest?.timestamp)
+        if (hasOxygenPermission) {
+            val oxygenRule = preferences.loadOxygenRule()
+            val oxygenAlert = OxygenAlertRuleEngine.evaluate(oxygenReadings, oxygenRule)
+            if (oxygenAlert != null && !snapshot.oxygenAlertActive) {
+                preferences.setOxygenAlertActive(true)
+                notifier.showLowOxygenAlert(oxygenAlert)
+                maybeSendSms(
+                    alertSettings,
+                    smsSender.sendOxygenAlert(alertSettings.phoneNumber, alertSettings.personName, oxygenAlert)
+                )
+            } else if (
+                oxygenAlert == null && snapshot.oxygenAlertActive && latestOxygen != null &&
+                latestOxygen.percentage >= oxygenRule.lowOxygenThresholdPercent
+            ) {
+                preferences.setOxygenAlertActive(false)
+                notifier.showOxygenRecovery(latestOxygen.percentage)
+            }
+        }
+
+        val notification = notifier.monitoringNotification(
+            latestBpm = latestHeart?.bpm,
+            latestHeartRateAt = latestHeart?.timestamp,
+            latestOxygenPercent = latestOxygen?.percentage
+        )
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
         } else {
@@ -107,6 +156,14 @@ class HealthMonitoringService : Service() {
             HealthAlertNotifier.NOTIFICATION_MONITORING_ID,
             notification,
             type
+        )
+    }
+
+    private fun maybeSendSms(settings: AlertSettings, result: Result<Unit>) {
+        if (!settings.smsEnabled || settings.phoneNumber.isBlank()) return
+        result.fold(
+            onSuccess = { preferences.setSmsStatus("Último SMS de alerta solicitado correctamente") },
+            onFailure = { preferences.setSmsStatus("Error SMS: ${it.message ?: it::class.simpleName}") }
         )
     }
 
@@ -130,7 +187,8 @@ class HealthMonitoringService : Service() {
         fun stop(context: Context) {
             MonitorPreferences(context).apply {
                 setMonitoringEnabled(false)
-                setAlertActive(false)
+                setHeartAlertActive(false)
+                setOxygenAlertActive(false)
             }
             context.stopService(Intent(context, HealthMonitoringService::class.java))
         }
