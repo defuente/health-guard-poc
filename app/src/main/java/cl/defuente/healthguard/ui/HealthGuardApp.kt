@@ -15,6 +15,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,10 +31,15 @@ import cl.defuente.healthguard.data.HealthConnectRepository
 import cl.defuente.healthguard.domain.AlertRule
 import cl.defuente.healthguard.domain.AlertRuleEngine
 import cl.defuente.healthguard.domain.HeartRateReading
+import cl.defuente.healthguard.domain.OxygenAlertRule
+import cl.defuente.healthguard.domain.OxygenAlertRuleEngine
+import cl.defuente.healthguard.domain.OxygenSaturationReading
+import cl.defuente.healthguard.monitoring.AlertSettings
 import cl.defuente.healthguard.monitoring.MonitorPreferences
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -43,25 +49,45 @@ fun HealthGuardApp(
     repository: HealthConnectRepository,
     monitorPreferences: MonitorPreferences,
     permissionRefreshVersion: Int,
+    smsPermissionGranted: Boolean,
     onRequestPermissions: () -> Unit,
+    onRequestSmsPermission: () -> Unit,
+    onSendTestSms: (String, String) -> String,
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var hasHeartRatePermission by remember { mutableStateOf(false) }
+    var hasOxygenPermission by remember { mutableStateOf(false) }
     var hasBackgroundPermission by remember { mutableStateOf(false) }
-    var readings by remember { mutableStateOf<List<HeartRateReading>>(emptyList()) }
+    var heartReadings by remember { mutableStateOf<List<HeartRateReading>>(emptyList()) }
+    var oxygenReadings by remember { mutableStateOf<List<OxygenSaturationReading>>(emptyList()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
-    var simulationEnabled by remember { mutableStateOf(false) }
-    val initialRule = remember { monitorPreferences.loadRule() }
-    var thresholdText by remember { mutableStateOf(initialRule.lowHeartRateThresholdBpm.toString()) }
-    var durationText by remember { mutableStateOf(initialRule.minimumDurationMinutes.toString()) }
-    var minimumReadingsText by remember { mutableStateOf(initialRule.minimumReadings.toString()) }
+    var heartSimulationEnabled by remember { mutableStateOf(false) }
+    var oxygenSimulationEnabled by remember { mutableStateOf(false) }
+
+    val initialHeartRule = remember { monitorPreferences.loadRule() }
+    var thresholdText by remember { mutableStateOf(initialHeartRule.lowHeartRateThresholdBpm.toString()) }
+    var durationText by remember { mutableStateOf(initialHeartRule.minimumDurationMinutes.toString()) }
+    var minimumReadingsText by remember { mutableStateOf(initialHeartRule.minimumReadings.toString()) }
+
+    val initialOxygenRule = remember { monitorPreferences.loadOxygenRule() }
+    var oxygenThresholdText by remember { mutableStateOf(initialOxygenRule.lowOxygenThresholdPercent.toInt().toString()) }
+    var oxygenDurationText by remember { mutableStateOf(initialOxygenRule.minimumDurationMinutes.toString()) }
+    var oxygenMinimumReadingsText by remember { mutableStateOf(initialOxygenRule.minimumReadings.toString()) }
+
+    val initialAlertSettings = remember { monitorPreferences.loadAlertSettings() }
+    var personNameText by remember { mutableStateOf(initialAlertSettings.personName) }
+    var phoneNumberText by remember { mutableStateOf(initialAlertSettings.phoneNumber) }
+    var smsEnabled by remember { mutableStateOf(initialAlertSettings.smsEnabled) }
+    var smsTestStatus by remember { mutableStateOf<String?>(null) }
+
     var monitorSnapshot by remember { mutableStateOf(monitorPreferences.snapshot()) }
 
     suspend fun refreshPermissionState() {
         hasHeartRatePermission = repository.hasHeartRateReadPermission()
+        hasOxygenPermission = repository.hasOxygenSaturationReadPermission()
         hasBackgroundPermission = repository.hasBackgroundReadPermission()
     }
 
@@ -71,9 +97,8 @@ fun HealthGuardApp(
             errorMessage = null
             runCatching {
                 refreshPermissionState()
-                if (hasHeartRatePermission) {
-                    readings = repository.readRecentHeartRate()
-                }
+                heartReadings = if (hasHeartRatePermission) repository.readRecentHeartRate() else emptyList()
+                oxygenReadings = if (hasOxygenPermission) repository.readRecentOxygenSaturation() else emptyList()
             }.onFailure {
                 errorMessage = it.message ?: it::class.simpleName
             }
@@ -82,7 +107,10 @@ fun HealthGuardApp(
     }
 
     LaunchedEffect(permissionRefreshVersion) {
-        if (repository.isAvailable()) refreshPermissionState()
+        if (repository.isAvailable()) {
+            refreshPermissionState()
+            refreshReadings()
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -92,19 +120,32 @@ fun HealthGuardApp(
         }
     }
 
-    val rule = AlertRule(
+    val heartRule = AlertRule(
         lowHeartRateThresholdBpm = thresholdText.toIntOrNull()?.coerceIn(30, 100) ?: 45,
         minimumDurationMinutes = durationText.toLongOrNull()?.coerceIn(1, 120) ?: 10,
         minimumReadings = minimumReadingsText.toIntOrNull()?.coerceIn(2, 60) ?: 5
     )
+    val oxygenRule = OxygenAlertRule(
+        lowOxygenThresholdPercent = oxygenThresholdText.toDoubleOrNull()?.coerceIn(50.0, 100.0) ?: 90.0,
+        minimumDurationMinutes = oxygenDurationText.toLongOrNull()?.coerceIn(1, 120) ?: 5,
+        minimumReadings = oxygenMinimumReadingsText.toIntOrNull()?.coerceIn(2, 30) ?: 2
+    )
+    val alertSettings = AlertSettings(
+        personName = personNameText.take(50),
+        phoneNumber = phoneNumberText.take(20),
+        smsEnabled = smsEnabled
+    )
 
-    LaunchedEffect(rule) {
-        monitorPreferences.saveRule(rule)
-    }
+    LaunchedEffect(heartRule) { monitorPreferences.saveRule(heartRule) }
+    LaunchedEffect(oxygenRule) { monitorPreferences.saveOxygenRule(oxygenRule) }
+    LaunchedEffect(alertSettings) { monitorPreferences.saveAlertSettings(alertSettings) }
 
-    val displayedReadings = if (simulationEnabled) simulatedLowReadings() else readings
-    val alert = AlertRuleEngine.evaluate(displayedReadings, rule)
-    val latest = displayedReadings.maxByOrNull { it.timestamp }
+    val displayedHeartReadings = if (heartSimulationEnabled) simulatedLowHeartReadings() else heartReadings
+    val displayedOxygenReadings = if (oxygenSimulationEnabled) simulatedLowOxygenReadings() else oxygenReadings
+    val heartAlert = AlertRuleEngine.evaluate(displayedHeartReadings, heartRule)
+    val oxygenAlert = OxygenAlertRuleEngine.evaluate(displayedOxygenReadings, oxygenRule)
+    val latestHeart = displayedHeartReadings.maxByOrNull { it.timestamp }
+    val latestOxygen = displayedOxygenReadings.maxByOrNull { it.timestamp }
     val timeFormatter = remember {
         DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
     }
@@ -119,13 +160,15 @@ fun HealthGuardApp(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Health Guard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("POC de monitoreo familiar con Health Connect · v0.2")
+            Text("POC de monitoreo familiar · v0.3 · FC + SpO₂ + SMS")
 
             StatusCard(
                 healthConnectStatus = repository.statusLabel(),
                 hasHeartRatePermission = hasHeartRatePermission,
+                hasOxygenPermission = hasOxygenPermission,
                 hasBackgroundPermission = hasBackgroundPermission,
-                backgroundFeatureAvailable = repository.isBackgroundReadFeatureAvailable()
+                backgroundFeatureAvailable = repository.isBackgroundReadFeatureAvailable(),
+                smsPermissionGranted = smsPermissionGranted
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -139,53 +182,101 @@ fun HealthGuardApp(
 
             errorMessage?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
 
+            VitalCard(
+                title = "Frecuencia cardíaca",
+                value = latestHeart?.let { "${it.bpm} BPM" } ?: "Sin datos",
+                timestamp = latestHeart?.timestamp,
+                source = latestHeart?.source,
+                timeFormatter = timeFormatter
+            )
+            VitalCard(
+                title = "Saturación de oxígeno (SpO₂)",
+                value = latestOxygen?.let { "${formatPercent(it.percentage)}%" } ?: "Sin datos",
+                timestamp = latestOxygen?.timestamp,
+                source = latestOxygen?.source,
+                timeFormatter = timeFormatter
+            )
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Contacto de alerta", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = personNameText,
+                        onValueChange = { personNameText = it.take(50) },
+                        label = { Text("Nombre de la persona monitoreada") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = phoneNumberText,
+                        onValueChange = { phoneNumberText = it.filter { ch -> ch.isDigit() || ch == '+' || ch == ' ' || ch == '-' }.take(20) },
+                        label = { Text("Teléfono SMS, ej. +56912345678") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Enviar SMS automático")
+                            Text(
+                                "Se enviará una vez por episodio de FC o SpO₂ bajo.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(checked = smsEnabled, onCheckedChange = { smsEnabled = it })
+                    }
+                    if (!smsPermissionGranted) {
+                        Button(onClick = onRequestSmsPermission) { Text("Autorizar envío de SMS") }
+                    } else {
+                        Button(
+                            onClick = { smsTestStatus = onSendTestSms(phoneNumberText, personNameText) },
+                            enabled = phoneNumberText.isNotBlank()
+                        ) {
+                            Text("Enviar SMS de prueba")
+                        }
+                    }
+                    smsTestStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    monitorSnapshot.lastSmsStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    Text(
+                        "Esta POC usa el SMS del propio teléfono. Puede generar cobros según tu plan móvil.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Monitoreo nocturno", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(if (monitorSnapshot.enabled) "● Activo" else "○ Inactivo")
                     monitorSnapshot.lastCheckAt?.let { Text("Último chequeo: ${timeFormatter.format(it)}") }
-                    monitorSnapshot.lastBpm?.let { Text("Última FC en segundo plano: $it BPM") }
-                    monitorSnapshot.lastSource?.let { Text("Fuente: $it") }
-                    if (monitorSnapshot.alertActive) {
-                        Text("⚠ Alerta activa", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    monitorSnapshot.lastBpm?.let { Text("FC en segundo plano: $it BPM") }
+                    monitorSnapshot.lastOxygenPercent?.let { Text("SpO₂ en segundo plano: ${formatPercent(it)}%") }
+                    monitorSnapshot.lastSource?.let { Text("Fuente FC: $it") }
+                    monitorSnapshot.lastOxygenSource?.let { Text("Fuente SpO₂: $it") }
+                    if (monitorSnapshot.heartAlertActive) {
+                        Text("⚠ Alerta de FC activa", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    }
+                    if (monitorSnapshot.oxygenAlertActive) {
+                        Text("⚠ Alerta de SpO₂ activa", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                     }
                     monitorSnapshot.lastError?.let {
                         Text("Error de monitoreo: $it", color = MaterialTheme.colorScheme.error)
                     }
                     Text(
-                        "Mientras esté activo, Android mantendrá una notificación persistente y Health Guard revisará Health Connect aproximadamente una vez por minuto.",
+                        "Mientras esté activo, Health Guard revisará Health Connect aproximadamente una vez por minuto.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Button(
                         onClick = if (monitorSnapshot.enabled) onStopMonitoring else onStartMonitoring,
-                        enabled = hasHeartRatePermission && hasBackgroundPermission
+                        enabled = hasBackgroundPermission && (hasHeartRatePermission || hasOxygenPermission)
                     ) {
                         Text(if (monitorSnapshot.enabled) "Detener monitoreo" else "Iniciar monitoreo nocturno")
                     }
-                    if (!hasBackgroundPermission) {
-                        Text("Autoriza la lectura en segundo plano antes de iniciar el monitoreo.", style = MaterialTheme.typography.bodySmall)
-                    }
                 }
             }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Frecuencia actual", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        text = latest?.let { "${it.bpm} BPM" } ?: "Sin datos",
-                        style = MaterialTheme.typography.displaySmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    latest?.let {
-                        Text("Última lectura: ${timeFormatter.format(it.timestamp)}")
-                        Text("Fuente: ${it.source}")
-                    }
-                }
-            }
-
-            Text("Regla de alerta", style = MaterialTheme.typography.titleLarge)
-            Text("Estos valores son configurables para la POC y no constituyen un umbral médico recomendado.")
-
+            Text("Regla de frecuencia cardíaca", style = MaterialTheme.typography.titleLarge)
+            Text("Valores de prueba configurables; no constituyen una recomendación médica.")
             OutlinedTextField(
                 value = thresholdText,
                 onValueChange = { thresholdText = it.filter(Char::isDigit).take(3) },
@@ -204,30 +295,63 @@ fun HealthGuardApp(
                 label = { Text("Cantidad mínima de lecturas") },
                 modifier = Modifier.fillMaxWidth()
             )
-
-            Button(onClick = { simulationEnabled = !simulationEnabled }) {
-                Text(if (simulationEnabled) "Salir de simulación" else "Simular FC baja por 12 min")
+            Button(onClick = { heartSimulationEnabled = !heartSimulationEnabled }) {
+                Text(if (heartSimulationEnabled) "Salir de simulación FC" else "Simular FC baja por 12 min")
             }
+            AlertCard(
+                title = "Resultado FC",
+                active = heartAlert != null,
+                lines = heartAlert?.let {
+                    listOf(
+                        "Mínima: ${it.minimumBpm} BPM",
+                        "Última: ${it.latestBpm} BPM",
+                        "Duración: ${it.durationMinutes} min",
+                        "Lecturas consecutivas: ${it.readingsCount}"
+                    )
+                } ?: emptyList()
+            )
 
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    if (alert != null) {
-                        Text("⚠ Alerta detectada", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                        Text("Mínima: ${alert.minimumBpm} BPM")
-                        Text("Última: ${alert.latestBpm} BPM")
-                        Text("Duración: ${alert.durationMinutes} min")
-                        Text("Lecturas consecutivas: ${alert.readingsCount}")
-                    } else {
-                        Text("Sin alerta activa", fontWeight = FontWeight.Bold)
-                    }
-                }
+            Text("Regla de SpO₂", style = MaterialTheme.typography.titleLarge)
+            Text("La pulsera no es un dispositivo médico; la regla solo sirve para probar alertas con datos disponibles en Health Connect.")
+            OutlinedTextField(
+                value = oxygenThresholdText,
+                onValueChange = { oxygenThresholdText = it.filter(Char::isDigit).take(3) },
+                label = { Text("SpO₂ mínima (%)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = oxygenDurationText,
+                onValueChange = { oxygenDurationText = it.filter(Char::isDigit).take(3) },
+                label = { Text("Duración mínima SpO₂ (minutos)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = oxygenMinimumReadingsText,
+                onValueChange = { oxygenMinimumReadingsText = it.filter(Char::isDigit).take(2) },
+                label = { Text("Lecturas mínimas SpO₂") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(onClick = { oxygenSimulationEnabled = !oxygenSimulationEnabled }) {
+                Text(if (oxygenSimulationEnabled) "Salir de simulación SpO₂" else "Simular SpO₂ baja por 12 min")
             }
+            AlertCard(
+                title = "Resultado SpO₂",
+                active = oxygenAlert != null,
+                lines = oxygenAlert?.let {
+                    listOf(
+                        "Mínima: ${formatPercent(it.minimumPercent)}%",
+                        "Última: ${formatPercent(it.latestPercent)}%",
+                        "Duración: ${it.durationMinutes} min",
+                        "Lecturas consecutivas: ${it.readingsCount}"
+                    )
+                } ?: emptyList()
+            )
 
-            Text("Últimas lecturas", style = MaterialTheme.typography.titleLarge)
-            if (displayedReadings.isEmpty()) {
-                Text("Todavía no hay lecturas disponibles.")
+            Text("Últimas lecturas de FC", style = MaterialTheme.typography.titleLarge)
+            if (displayedHeartReadings.isEmpty()) {
+                Text("Todavía no hay lecturas de frecuencia cardíaca.")
             } else {
-                displayedReadings.sortedByDescending { it.timestamp }.take(15).forEach { reading ->
+                displayedHeartReadings.sortedByDescending { it.timestamp }.take(10).forEach { reading ->
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(timeFormatter.format(reading.timestamp))
                         Text("${reading.bpm} BPM")
@@ -235,9 +359,21 @@ fun HealthGuardApp(
                 }
             }
 
+            Text("Últimas lecturas de SpO₂", style = MaterialTheme.typography.titleLarge)
+            if (displayedOxygenReadings.isEmpty()) {
+                Text("Sin datos de SpO₂ en Health Connect. Revisa que Mi Fitness tenga seguimiento de oxígeno activo y sincronizado.")
+            } else {
+                displayedOxygenReadings.sortedByDescending { it.timestamp }.take(10).forEach { reading ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(timeFormatter.format(reading.timestamp))
+                        Text("${formatPercent(reading.percentage)}%")
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                "Esta aplicación es una POC de alerta y acompañamiento. No diagnostica enfermedades ni sustituye dispositivos médicos o atención profesional.",
+                "Health Guard es una POC de alerta y acompañamiento. No diagnostica enfermedades ni sustituye dispositivos médicos o atención profesional.",
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -248,26 +384,63 @@ fun HealthGuardApp(
 private fun StatusCard(
     healthConnectStatus: String,
     hasHeartRatePermission: Boolean,
+    hasOxygenPermission: Boolean,
     hasBackgroundPermission: Boolean,
-    backgroundFeatureAvailable: Boolean
+    backgroundFeatureAvailable: Boolean,
+    smsPermissionGranted: Boolean
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Estado", style = MaterialTheme.typography.titleMedium)
             Text("Health Connect: $healthConnectStatus")
             Text("Lectura de FC: ${if (hasHeartRatePermission) "autorizada" else "sin autorización"}")
+            Text("Lectura de SpO₂: ${if (hasOxygenPermission) "autorizada" else "sin autorización"}")
             Text(
                 if (!backgroundFeatureAvailable) {
-                    "Lectura en segundo plano: no disponible en esta versión de Health Connect"
+                    "Lectura en segundo plano: no disponible"
                 } else {
                     "Lectura en segundo plano: ${if (hasBackgroundPermission) "autorizada" else "sin autorización"}"
                 }
             )
+            Text("SMS: ${if (smsPermissionGranted) "autorizado" else "sin autorización"}")
         }
     }
 }
 
-private fun simulatedLowReadings(now: Instant = Instant.now()): List<HeartRateReading> {
+@Composable
+private fun VitalCard(
+    title: String,
+    value: String,
+    timestamp: Instant?,
+    source: String?,
+    timeFormatter: DateTimeFormatter
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(value, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+            timestamp?.let { Text("Última lectura: ${timeFormatter.format(it)}") }
+            source?.let { Text("Fuente: $it") }
+        }
+    }
+}
+
+@Composable
+private fun AlertCard(title: String, active: Boolean, lines: List<String>) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(title, fontWeight = FontWeight.Bold)
+            if (active) {
+                Text("⚠ Alerta detectada", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                lines.forEach { Text(it) }
+            } else {
+                Text("Sin alerta activa")
+            }
+        }
+    }
+}
+
+private fun simulatedLowHeartReadings(now: Instant = Instant.now()): List<HeartRateReading> {
     val bpm = listOf(42, 41, 40, 39, 41, 40, 42)
     return bpm.mapIndexed { index, value ->
         HeartRateReading(
@@ -277,3 +450,16 @@ private fun simulatedLowReadings(now: Instant = Instant.now()): List<HeartRateRe
         )
     }
 }
+
+private fun simulatedLowOxygenReadings(now: Instant = Instant.now()): List<OxygenSaturationReading> {
+    val values = listOf(89.0, 88.0, 87.0, 88.0, 89.0, 88.0, 89.0)
+    return values.mapIndexed { index, value ->
+        OxygenSaturationReading(
+            timestamp = now.minusSeconds(((values.lastIndex - index) * 120).toLong()),
+            percentage = value,
+            source = "SIMULACIÓN"
+        )
+    }
+}
+
+private fun formatPercent(value: Double): String = String.format(Locale.US, "%.0f", value)

@@ -6,15 +6,18 @@ import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.permission.HealthPermission.Companion.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import cl.defuente.healthguard.domain.HeartRateReading
+import cl.defuente.healthguard.domain.OxygenSaturationReading
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
 class HealthConnectRepository(context: Context) {
     private val appContext = context.applicationContext
     private val heartRateReadPermission = HealthPermission.getReadPermission(HeartRateRecord::class)
+    private val oxygenSaturationReadPermission = HealthPermission.getReadPermission(OxygenSaturationRecord::class)
 
     fun sdkStatus(): Int = HealthConnectClient.getSdkStatus(appContext)
 
@@ -38,18 +41,15 @@ class HealthConnectRepository(context: Context) {
 
     fun permissionsToRequest(): Set<String> = buildSet {
         add(heartRateReadPermission)
+        add(oxygenSaturationReadPermission)
         if (isBackgroundReadFeatureAvailable()) {
             add(PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND)
         }
     }
 
-    suspend fun hasHeartRateReadPermission(): Boolean {
-        if (!isAvailable()) return false
-        val granted = HealthConnectClient.getOrCreate(appContext)
-            .permissionController
-            .getGrantedPermissions()
-        return heartRateReadPermission in granted
-    }
+    suspend fun hasHeartRateReadPermission(): Boolean = hasPermission(heartRateReadPermission)
+
+    suspend fun hasOxygenSaturationReadPermission(): Boolean = hasPermission(oxygenSaturationReadPermission)
 
     suspend fun hasBackgroundReadPermission(): Boolean {
         if (!isAvailable() || !isBackgroundReadFeatureAvailable()) return false
@@ -57,6 +57,14 @@ class HealthConnectRepository(context: Context) {
             .permissionController
             .getGrantedPermissions()
         return PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in granted
+    }
+
+    private suspend fun hasPermission(permission: String): Boolean {
+        if (!isAvailable()) return false
+        val granted = HealthConnectClient.getOrCreate(appContext)
+            .permissionController
+            .getGrantedPermissions()
+        return permission in granted
     }
 
     suspend fun readRecentHeartRate(hours: Long = 12): List<HeartRateReading> {
@@ -85,6 +93,33 @@ class HealthConnectRepository(context: Context) {
                         source = source
                     )
                 }
+            }
+            .sortedByDescending { it.timestamp }
+    }
+
+    suspend fun readRecentOxygenSaturation(hours: Long = 12): List<OxygenSaturationReading> {
+        check(isAvailable()) { "Health Connect no está disponible" }
+        check(hasOxygenSaturationReadPermission()) { "Falta permiso para leer saturación de oxígeno" }
+
+        val end = Instant.now()
+        val start = end.minus(hours, ChronoUnit.HOURS)
+        val client = HealthConnectClient.getOrCreate(appContext)
+        val response = client.readRecords(
+            ReadRecordsRequest(
+                recordType = OxygenSaturationRecord::class,
+                timeRangeFilter = TimeRangeFilter.between(start, end),
+                ascendingOrder = false,
+                pageSize = 1000
+            )
+        )
+
+        return response.records
+            .map { record ->
+                OxygenSaturationReading(
+                    timestamp = record.time,
+                    percentage = record.percentage.value,
+                    source = record.metadata.dataOrigin.packageName
+                )
             }
             .sortedByDescending { it.timestamp }
     }
