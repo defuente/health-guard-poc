@@ -81,10 +81,42 @@ function Initialize-Java {
         throw "Java $major was found, but this project requires JDK $minimumJavaMajor or newer."
     }
 
+    if (-not $env:JAVA_HOME) {
+        $env:JAVA_HOME = Split-Path (Split-Path $javaExe -Parent) -Parent
+    }
+
     Write-Host "Java OK: JDK $major ($javaExe)"
 }
 
+function Initialize-AndroidSdk {
+    $sdkCandidates = @()
+
+    if ($env:ANDROID_HOME) {
+        $sdkCandidates += $env:ANDROID_HOME
+    }
+
+    if ($env:LOCALAPPDATA) {
+        $sdkCandidates += (Join-Path $env:LOCALAPPDATA "Android\Sdk")
+    }
+
+    $sdkHome = $sdkCandidates |
+        Where-Object { $_ -and (Test-Path $_) } |
+        Select-Object -First 1
+
+    if (-not $sdkHome) {
+        throw "Android SDK was not found. Open Android Studio > Tools > SDK Manager, note 'Android SDK Location', then set ANDROID_HOME to that folder or create local.properties with sdk.dir=<path>."
+    }
+
+    $env:ANDROID_HOME = $sdkHome
+    $sdkForProperties = $sdkHome.Replace('\', '/')
+    Set-Content -Path ".\local.properties" -Value "sdk.dir=$sdkForProperties" -Encoding ASCII
+
+    Write-Host "Android SDK OK: $sdkHome"
+    Write-Host "Created local.properties with sdk.dir (this file is gitignored)."
+}
+
 Initialize-Java
+Initialize-AndroidSdk
 
 New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
 
