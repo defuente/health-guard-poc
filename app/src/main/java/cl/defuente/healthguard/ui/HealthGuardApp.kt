@@ -30,16 +30,22 @@ import cl.defuente.healthguard.data.HealthConnectRepository
 import cl.defuente.healthguard.domain.AlertRule
 import cl.defuente.healthguard.domain.AlertRuleEngine
 import cl.defuente.healthguard.domain.HeartRateReading
+import cl.defuente.healthguard.monitoring.MonitorPreferences
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
 fun HealthGuardApp(
     repository: HealthConnectRepository,
+    monitorPreferences: MonitorPreferences,
     permissionRefreshVersion: Int,
-    onRequestPermissions: () -> Unit
+    onRequestPermissions: () -> Unit,
+    onStartMonitoring: () -> Unit,
+    onStopMonitoring: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var hasHeartRatePermission by remember { mutableStateOf(false) }
@@ -48,9 +54,11 @@ fun HealthGuardApp(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var simulationEnabled by remember { mutableStateOf(false) }
-    var thresholdText by remember { mutableStateOf("45") }
-    var durationText by remember { mutableStateOf("10") }
-    var minimumReadingsText by remember { mutableStateOf("5") }
+    val initialRule = remember { monitorPreferences.loadRule() }
+    var thresholdText by remember { mutableStateOf(initialRule.lowHeartRateThresholdBpm.toString()) }
+    var durationText by remember { mutableStateOf(initialRule.minimumDurationMinutes.toString()) }
+    var minimumReadingsText by remember { mutableStateOf(initialRule.minimumReadings.toString()) }
+    var monitorSnapshot by remember { mutableStateOf(monitorPreferences.snapshot()) }
 
     suspend fun refreshPermissionState() {
         hasHeartRatePermission = repository.hasHeartRateReadPermission()
@@ -74,8 +82,13 @@ fun HealthGuardApp(
     }
 
     LaunchedEffect(permissionRefreshVersion) {
-        if (repository.isAvailable()) {
-            refreshPermissionState()
+        if (repository.isAvailable()) refreshPermissionState()
+    }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            monitorSnapshot = monitorPreferences.snapshot()
+            delay(1_000)
         }
     }
 
@@ -84,6 +97,10 @@ fun HealthGuardApp(
         minimumDurationMinutes = durationText.toLongOrNull()?.coerceIn(1, 120) ?: 10,
         minimumReadings = minimumReadingsText.toIntOrNull()?.coerceIn(2, 60) ?: 5
     )
+
+    LaunchedEffect(rule) {
+        monitorPreferences.saveRule(rule)
+    }
 
     val displayedReadings = if (simulationEnabled) simulatedLowReadings() else readings
     val alert = AlertRuleEngine.evaluate(displayedReadings, rule)
@@ -102,7 +119,7 @@ fun HealthGuardApp(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Health Guard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("POC de monitoreo familiar con Health Connect")
+            Text("POC de monitoreo familiar con Health Connect · v0.2")
 
             StatusCard(
                 healthConnectStatus = repository.statusLabel(),
@@ -120,8 +137,35 @@ fun HealthGuardApp(
                 }
             }
 
-            errorMessage?.let {
-                Text("Error: $it", color = MaterialTheme.colorScheme.error)
+            errorMessage?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Monitoreo nocturno", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(if (monitorSnapshot.enabled) "● Activo" else "○ Inactivo")
+                    monitorSnapshot.lastCheckAt?.let { Text("Último chequeo: ${timeFormatter.format(it)}") }
+                    monitorSnapshot.lastBpm?.let { Text("Última FC en segundo plano: $it BPM") }
+                    monitorSnapshot.lastSource?.let { Text("Fuente: $it") }
+                    if (monitorSnapshot.alertActive) {
+                        Text("⚠ Alerta activa", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    }
+                    monitorSnapshot.lastError?.let {
+                        Text("Error de monitoreo: $it", color = MaterialTheme.colorScheme.error)
+                    }
+                    Text(
+                        "Mientras esté activo, Android mantendrá una notificación persistente y Health Guard revisará Health Connect aproximadamente una vez por minuto.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(
+                        onClick = if (monitorSnapshot.enabled) onStopMonitoring else onStartMonitoring,
+                        enabled = hasHeartRatePermission && hasBackgroundPermission
+                    ) {
+                        Text(if (monitorSnapshot.enabled) "Detener monitoreo" else "Iniciar monitoreo nocturno")
+                    }
+                    if (!hasBackgroundPermission) {
+                        Text("Autoriza la lectura en segundo plano antes de iniciar el monitoreo.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
 
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -139,8 +183,8 @@ fun HealthGuardApp(
                 }
             }
 
-            Text("Regla de prueba", style = MaterialTheme.typography.titleLarge)
-            Text("Los valores siguientes son configurables para la POC y no constituyen un umbral médico recomendado.")
+            Text("Regla de alerta", style = MaterialTheme.typography.titleLarge)
+            Text("Estos valores son configurables para la POC y no constituyen un umbral médico recomendado.")
 
             OutlinedTextField(
                 value = thresholdText,
@@ -183,18 +227,12 @@ fun HealthGuardApp(
             if (displayedReadings.isEmpty()) {
                 Text("Todavía no hay lecturas disponibles.")
             } else {
-                displayedReadings
-                    .sortedByDescending { it.timestamp }
-                    .take(15)
-                    .forEach { reading ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(timeFormatter.format(reading.timestamp))
-                            Text("${reading.bpm} BPM")
-                        }
+                displayedReadings.sortedByDescending { it.timestamp }.take(15).forEach { reading ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(timeFormatter.format(reading.timestamp))
+                        Text("${reading.bpm} BPM")
                     }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
