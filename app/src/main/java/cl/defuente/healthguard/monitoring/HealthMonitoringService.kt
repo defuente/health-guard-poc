@@ -35,11 +35,6 @@ class HealthMonitoringService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopMonitoring()
-            return START_NOT_STICKY
-        }
-
         if (intent == null && !preferences.isMonitoringEnabled()) {
             stopSelf()
             return START_NOT_STICKY
@@ -115,15 +110,6 @@ class HealthMonitoringService : Service() {
         )
     }
 
-    private fun stopMonitoring() {
-        preferences.setMonitoringEnabled(false)
-        preferences.setAlertActive(false)
-        monitoringJob?.cancel()
-        monitoringJob = null
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
-    }
-
     override fun onDestroy() {
         monitoringJob?.cancel()
         super.onDestroy()
@@ -133,7 +119,6 @@ class HealthMonitoringService : Service() {
 
     companion object {
         private const val ACTION_START = "cl.defuente.healthguard.action.START_MONITORING"
-        private const val ACTION_STOP = "cl.defuente.healthguard.action.STOP_MONITORING"
         private const val POLL_INTERVAL_MS = 60_000L
 
         fun start(context: Context) {
@@ -143,9 +128,11 @@ class HealthMonitoringService : Service() {
         }
 
         fun stop(context: Context) {
-            MonitorPreferences(context).setMonitoringEnabled(false)
-            val intent = Intent(context, HealthMonitoringService::class.java).setAction(ACTION_STOP)
-            context.startService(intent)
+            MonitorPreferences(context).apply {
+                setMonitoringEnabled(false)
+                setAlertActive(false)
+            }
+            context.stopService(Intent(context, HealthMonitoringService::class.java))
         }
     }
 }
